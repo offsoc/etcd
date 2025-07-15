@@ -2,22 +2,22 @@ module go.etcd.io/etcd/tools/v3
 
 go 1.24
 
-toolchain go1.24.4
+toolchain go1.24.5
 
 require (
-	github.com/alexfalkowski/gocovmerge v1.9.0
+	github.com/alexfalkowski/gocovmerge v1.11.0
 	github.com/appscodelabs/license-bill-of-materials v0.0.0-20220707232035-6018e0c5287c
 	github.com/chzchzchz/goword v0.0.0-20170907005317-a9744cb52b03
 	github.com/cloudflare/cfssl v1.6.5
 	github.com/gogo/protobuf v1.3.2
 	github.com/golangci/golangci-lint v1.64.8
 	github.com/google/addlicense v1.1.1
-	github.com/google/yamlfmt v0.17.0
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3
+	github.com/google/yamlfmt v0.17.2
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1
 	go.etcd.io/gofail v0.2.0
 	go.etcd.io/protodoc v0.0.0-20180829002748-484ab544e116
 	go.etcd.io/raft/v3 v3.6.0
-	gotest.tools/gotestsum v1.12.2
+	gotest.tools/gotestsum v1.12.3
 	gotest.tools/v3 v3.5.2
 	honnef.co/go/tools v0.6.1
 )
@@ -74,7 +74,7 @@ require (
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.9 // indirect
 	github.com/go-critic/go-critic v0.12.0 // indirect
-	github.com/go-logr/logr v1.4.2 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
@@ -147,14 +147,14 @@ require (
 	github.com/nunnatsa/ginkgolinter v0.19.1 // indirect
 	github.com/olekukonko/errors v0.0.0-20250405072817-4e6d85265da6 // indirect
 	github.com/olekukonko/ll v0.0.8 // indirect
-	github.com/olekukonko/tablewriter v1.0.7 // indirect
+	github.com/olekukonko/tablewriter v1.0.8 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/polyfloyd/go-errorlint v1.7.1 // indirect
 	github.com/prometheus/client_golang v1.22.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.64.0 // indirect
+	github.com/prometheus/common v0.65.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/quasilyte/go-ruleguard v0.4.3-0.20240823090925-0fe6f58b47b1 // indirect
 	github.com/quasilyte/go-ruleguard/dsl v0.3.22 // indirect
@@ -223,8 +223,8 @@ require (
 	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/tools v0.34.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20250528174236-200df99c418a // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250528174236-200df99c418a // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/grpc v1.73.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

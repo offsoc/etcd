@@ -10,6 +10,7 @@ Previous change logs can be found at [CHANGELOG-3.4](https://github.com/etcd-io/
 
 - Fix [the compaction pause duration metric is not emitted for every compaction batch](https://github.com/etcd-io/etcd/pull/19771)
 - Fix [mvcc: avoid double decrement of watcher gauge on close/cancel race](https://github.com/etcd-io/etcd/pull/20066)
+- Fix [Watch on future revision returns old events or notifications](https://github.com/etcd-io/etcd/pull/20290)
 
 ### Package `clientv3`
 
@@ -18,7 +19,7 @@ Previous change logs can be found at [CHANGELOG-3.4](https://github.com/etcd-io/
 
 ### Dependencies
 
-- Compile binaries using [go 1.23.10](https://github.com/etcd-io/etcd/pull/20164)
+- Compile binaries using [go 1.23.11](https://github.com/etcd-io/etcd/pull/20321)
 
 ---
 
