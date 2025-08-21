@@ -4,13 +4,25 @@ Previous change logs can be found at [CHANGELOG-3.4](https://github.com/etcd-io/
 
 ---
 
-## v3.5.22 (TBC)
+## v3.5.23 (TBA)
+
+### Dependencies
+
+- Compile binaries using [go 1.23.12](https://github.com/etcd-io/etcd/pull/20462).
+- [Bump bbolt to v1.3.12](https://github.com/etcd-io/etcd/pull/20514).
+
+---
+
+## v3.5.22 (2025-07-22)
 
 ### etcd server
 
 - Fix [the compaction pause duration metric is not emitted for every compaction batch](https://github.com/etcd-io/etcd/pull/19771)
 - Fix [mvcc: avoid double decrement of watcher gauge on close/cancel race](https://github.com/etcd-io/etcd/pull/20066)
 - Fix [Watch on future revision returns old events or notifications](https://github.com/etcd-io/etcd/pull/20290)
+- Fix [`--force-new-cluster` can't remove all other members in a corner case](https://github.com/etcd-io/etcd/pull/20339)
+- Fix [v2store check (IsMetaStoreOnly) returns wrong result even there is no any auth data](https://github.com/etcd-io/etcd/pull/20357)
+- Improve [help message for --quota-backend-bytes](https://github.com/etcd-io/etcd/pull/20380)
 
 ### Package `clientv3`
 

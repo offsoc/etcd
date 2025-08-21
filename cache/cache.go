@@ -22,36 +22,34 @@ import (
 	"sync"
 	"time"
 
-	rpctypes "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// TODO: add gap-free replay for arbitrary startRevs and drop this guard.
-var ErrUnsupportedWatch = errors.New("cache: unsupported watch parameters")
+var (
+	// Returned when an option combination isn’t yet handled by the cache (e.g. WithPrevKV, WithProgressNotify for Watch(), WithCountOnly for Get()).
+	ErrUnsupportedRequest = errors.New("cache: unsupported request parameters")
+	// Returned when the requested key or key‑range is invalid (empty or reversed) or lies outside c.prefix.
+	ErrKeyRangeInvalid = errors.New("cache: invalid or out‑of‑range key range")
+)
 
 // Cache buffers a single etcd Watch for a given key‐prefix and fan‑outs local watchers.
 type Cache struct {
 	prefix      string // prefix is the key-prefix this shard is responsible for ("" = root).
 	cfg         Config // immutable runtime configuration
 	watcher     clientv3.Watcher
+	kv          clientv3.KV
 	demux       *demux // demux fans incoming events out to active watchers and manages resync.
-	ready       chan struct{}
+	store       *store // last‑observed snapshot
+	ready       *ready
 	stop        context.CancelFunc
 	waitGroup   sync.WaitGroup
 	internalCtx context.Context
 }
 
-// watchCtx collects all the knobs that both serveWatchEvents and watchRetryLoop need.
-type watchCtx struct {
-	cache           *Cache
-	backoffStart    time.Duration
-	backoffMax      time.Duration
-	onFirstResponse func() // callback to fire once on first upstream response
-}
-
 // New builds a cache shard that watches only the requested prefix.
 // For the root cache pass "".
-func New(watcher clientv3.Watcher, prefix string, opts ...Option) (*Cache, error) {
+func New(client *clientv3.Client, prefix string, opts ...Option) (*Cache, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(&cfg)
@@ -66,8 +64,10 @@ func New(watcher clientv3.Watcher, prefix string, opts ...Option) (*Cache, error
 	cache := &Cache{
 		prefix:      prefix,
 		cfg:         cfg,
-		watcher:     watcher,
-		ready:       make(chan struct{}),
+		watcher:     client.Watcher,
+		kv:          client.KV,
+		store:       newStore(),
+		ready:       newReady(),
 		stop:        cancel,
 		internalCtx: internalCtx,
 	}
@@ -77,15 +77,7 @@ func New(watcher clientv3.Watcher, prefix string, opts ...Option) (*Cache, error
 	cache.waitGroup.Add(1)
 	go func() {
 		defer cache.waitGroup.Done()
-		readyOnce := sync.Once{}
-
-		watchCtx := &watchCtx{
-			cache:           cache,
-			backoffStart:    cfg.InitialBackoff,
-			backoffMax:      cfg.MaxBackoff,
-			onFirstResponse: func() { readyOnce.Do(func() { close(cache.ready) }) },
-		}
-		serveWatchEvents(internalCtx, watchCtx)
+		cache.getWatchLoop()
 	}()
 
 	return cache, nil
@@ -94,21 +86,31 @@ func New(watcher clientv3.Watcher, prefix string, opts ...Option) (*Cache, error
 // Watch registers a cache-backed watcher for a given key or prefix.
 // It returns a WatchChan that streams WatchResponses containing events.
 func (c *Cache) Watch(ctx context.Context, key string, opts ...clientv3.OpOption) clientv3.WatchChan {
-	select {
-	case <-c.ready:
-	case <-ctx.Done():
+	if err := c.WaitReady(ctx); err != nil {
 		emptyWatchChan := make(chan clientv3.WatchResponse)
 		close(emptyWatchChan)
 		return emptyWatchChan
 	}
 
-	op := clientv3.OpGet(key, opts...)
+	op := clientv3.OpWatch(key, opts...)
 	startRev := op.Rev()
 
-	pred, err := c.validateWatch(key, opts...)
+	if startRev != 0 {
+		if oldest := c.demux.PeekOldest(); oldest != 0 && startRev < oldest {
+			ch := make(chan clientv3.WatchResponse, 1)
+			ch <- clientv3.WatchResponse{
+				Canceled:        true,
+				CompactRevision: startRev,
+			}
+			close(ch)
+			return ch
+		}
+	}
+
+	pred, err := c.validateWatch(key, op)
 	if err != nil {
 		ch := make(chan clientv3.WatchResponse, 1)
-		ch <- clientv3.WatchResponse{Canceled: true}
+		ch <- clientv3.WatchResponse{Canceled: true, CancelReason: err.Error()}
 		close(ch)
 		return ch
 	}
@@ -145,23 +147,52 @@ func (c *Cache) Watch(ctx context.Context, key string, opts ...clientv3.OpOption
 	return responseChan
 }
 
-// Ready reports whether the cache has finished its initial load.
-func (c *Cache) Ready() bool {
-	select {
-	case <-c.ready:
-		return true
-	default:
-		return false
+func (c *Cache) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	if c.store.LatestRev() == 0 {
+		if err := c.WaitReady(ctx); err != nil {
+			return nil, err
+		}
 	}
+	op := clientv3.OpGet(key, opts...)
+
+	if _, err := c.validateGet(key, op); err != nil {
+		return nil, err
+	}
+
+	startKey := []byte(key)
+	endKey := op.RangeBytes()
+	kvs, rev, err := c.store.Get(startKey, endKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &clientv3.GetResponse{
+		Header: &pb.ResponseHeader{Revision: rev},
+		Kvs:    kvs,
+		Count:  int64(len(kvs)),
+	}, nil
+}
+
+// Ready returns true if the snapshot has been loaded and the first watch has been confirmed.
+func (c *Cache) Ready() bool {
+	return c.ready.Ready()
 }
 
 // WaitReady blocks until the cache is ready or the ctx is cancelled.
 func (c *Cache) WaitReady(ctx context.Context) error {
-	select {
-	case <-c.ready:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	return c.ready.WaitReady(ctx)
+}
+
+func (c *Cache) WaitForRevision(ctx context.Context, rev int64) error {
+	for {
+		if c.store.LatestRev() >= rev {
+			return nil
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
@@ -171,80 +202,176 @@ func (c *Cache) Close() {
 	c.waitGroup.Wait()
 }
 
-func serveWatchEvents(ctx context.Context, watchCtx *watchCtx) {
-	backoff := watchCtx.backoffStart
+func (c *Cache) getWatchLoop() {
+	cfg := defaultConfig()
+	ctx := c.internalCtx
+	backoff := cfg.InitialBackoff
 	for {
-		opts := []clientv3.OpOption{
-			clientv3.WithPrefix(),
-			clientv3.WithProgressNotify(),
-			clientv3.WithCreatedNotify(),
-		}
-		if oldestRev := watchCtx.cache.demux.PeekOldest(); oldestRev != 0 {
-			opts = append(opts,
-				clientv3.WithRev(oldestRev+1))
-		}
-		watchCh := watchCtx.cache.watcher.Watch(ctx, watchCtx.cache.prefix, opts...)
-
-		if err := readWatchChannel(watchCh, watchCtx.cache, watchCtx.cache.demux, watchCtx.onFirstResponse); err == nil {
+		if err := ctx.Err(); err != nil {
 			return
 		}
-
+		if err := c.getWatch(); err != nil {
+			fmt.Printf("getWatch failed, will retry after %v: %v\n", backoff, err)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
 		}
-		if backoff < watchCtx.backoffMax {
-			backoff *= 2
-		}
 	}
 }
 
-// readWatchChannel reads an etcd Watch stream into History and enqueueCh, returning nil on cancel or first error.
-func readWatchChannel(
-	watchChan clientv3.WatchChan,
-	cache *Cache,
-	demux *demux,
-	onFirstResponse func(),
-) error {
-	for resp := range watchChan {
-		onFirstResponse()
+func (c *Cache) getWatch() error {
+	getResp, err := c.get(c.internalCtx)
+	if err != nil {
+		return err
+	}
+	return c.watch(getResp.Header.Revision + 1)
+}
 
-		if err := resp.Err(); err != nil {
-			if errors.Is(err, rpctypes.ErrCompacted) {
-				select {
-				case <-cache.ready:
-					// TODO: Reinitialize cache.ready safely; current direct channel assignment can race with concurrent watchers
-					cache.ready = make(chan struct{})
-				default:
-				}
-				demux.Purge()
+func (c *Cache) get(ctx context.Context) (*clientv3.GetResponse, error) {
+	resp, err := c.kv.Get(ctx, c.prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
+	}
+	c.store.Restore(resp.Kvs, resp.Header.Revision)
+	return resp, nil
+}
+
+func (c *Cache) watch(rev int64) error {
+	readyOnce := sync.Once{}
+	for {
+		storeW := newWatcher(c.cfg.PerWatcherBufferSize, nil)
+		c.demux.Register(storeW, rev)
+		applyErr := make(chan error, 1)
+		c.waitGroup.Add(1)
+		go func() {
+			defer c.waitGroup.Done()
+			if err := c.applyStorage(storeW); err != nil {
+				applyErr <- err
 			}
+			close(applyErr)
+		}()
+
+		watchCh := c.watcher.Watch(
+			c.internalCtx,
+			c.prefix,
+			clientv3.WithPrefix(),
+			clientv3.WithRev(rev),
+			clientv3.WithProgressNotify(),
+			clientv3.WithCreatedNotify(),
+		)
+
+		err := c.watchEvents(watchCh, applyErr, &readyOnce)
+		c.demux.Unregister(storeW)
+
+		if err != nil {
 			return err
 		}
-		demux.Broadcast(resp.Events)
 	}
-	return nil
 }
 
-func (c *Cache) validateWatch(key string, opts ...clientv3.OpOption) (pred KeyPredicate, err error) {
-	op := clientv3.OpGet(key, opts...)
-	startRev := op.Rev()
-	// TODO: Support watch on arbitrary startRev support once we guarantee gap-free replay.
-	if startRev != 0 {
-		return nil, ErrUnsupportedWatch
+func (c *Cache) applyStorage(storeW *watcher) error {
+	for {
+		select {
+		case <-c.internalCtx.Done():
+			return nil
+		case events, ok := <-storeW.eventQueue:
+			if !ok {
+				return nil
+			}
+			if err := c.store.Apply(events); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (c *Cache) watchEvents(watchCh clientv3.WatchChan, applyErr <-chan error, readyOnce *sync.Once) error {
+	for {
+		select {
+		case <-c.internalCtx.Done():
+			return c.internalCtx.Err()
+		case resp, ok := <-watchCh:
+			if !ok {
+				return nil
+			}
+			readyOnce.Do(func() { c.ready.Set() })
+			if err := resp.Err(); err != nil {
+				c.ready.Reset()
+				c.demux.Purge()
+				return err
+			}
+			c.demux.Broadcast(resp.Events)
+		case err := <-applyErr:
+			c.ready.Reset()
+			c.demux.Purge()
+			return err
+		}
+	}
+}
+
+func (c *Cache) validateWatch(key string, op clientv3.Op) (pred KeyPredicate, err error) {
+	switch {
+	case op.IsPrevKV():
+		return nil, fmt.Errorf("%w: PrevKV not supported", ErrUnsupportedRequest)
+	case op.IsFragment():
+		return nil, fmt.Errorf("%w: Fragment not supported", ErrUnsupportedRequest)
+	case op.IsProgressNotify():
+		return nil, fmt.Errorf("%w: ProgressNotify not supported", ErrUnsupportedRequest)
+	case op.IsCreatedNotify():
+		return nil, fmt.Errorf("%w: CreatedNotify not supported", ErrUnsupportedRequest)
+	case op.IsFilterPut():
+		return nil, fmt.Errorf("%w: FilterPut not supported", ErrUnsupportedRequest)
+	case op.IsFilterDelete():
+		return nil, fmt.Errorf("%w: FilterDelete not supported", ErrUnsupportedRequest)
 	}
 
 	startKey := []byte(key)
 	endKey := op.RangeBytes() // nil = single key, {0}=FromKey, else explicit range
 
-	if err := c.validateWatchRange(startKey, endKey); err != nil {
+	if err := c.validateRange(startKey, endKey); err != nil {
 		return nil, err
 	}
 	return KeyPredForRange(startKey, endKey), nil
 }
 
-func (c *Cache) validateWatchRange(startKey, endKey []byte) error {
+func (c *Cache) validateGet(key string, op clientv3.Op) (KeyPredicate, error) {
+	switch {
+	case op.IsCountOnly():
+		return nil, fmt.Errorf("%w: CountOnly not supported", ErrUnsupportedRequest)
+	case op.IsPrevKV():
+		return nil, fmt.Errorf("%w: PrevKV not supported", ErrUnsupportedRequest)
+	case op.IsSortSet():
+		return nil, fmt.Errorf("%w: SortSet not supported", ErrUnsupportedRequest)
+	case op.Limit() != 0:
+		return nil, fmt.Errorf("%w: Limit(%d) not supported", ErrUnsupportedRequest, op.Limit())
+	case op.MinModRev() != 0:
+		return nil, fmt.Errorf("%w: MinModRev(%d) not supported", ErrUnsupportedRequest, op.MinModRev())
+	case op.MaxModRev() != 0:
+		return nil, fmt.Errorf("%w: MaxModRev(%d) not supported", ErrUnsupportedRequest, op.MaxModRev())
+	case op.MinCreateRev() != 0:
+		return nil, fmt.Errorf("%w: MinCreateRev(%d) not supported", ErrUnsupportedRequest, op.MinCreateRev())
+	case op.MaxCreateRev() != 0:
+		return nil, fmt.Errorf("%w: MaxCreateRev(%d) not supported", ErrUnsupportedRequest, op.MaxCreateRev())
+	// cache now only serves serializable reads of the latest revision (rev == 0).
+	case op.Rev() != 0:
+		return nil, fmt.Errorf("%w: Rev(%d) not supported", ErrUnsupportedRequest, op.Rev())
+	case !op.IsSerializable():
+		return nil, fmt.Errorf("%w: non-serializable request", ErrUnsupportedRequest)
+	}
+
+	startKey := []byte(key)
+	endKey := op.RangeBytes()
+
+	if err := c.validateRange(startKey, endKey); err != nil {
+		return nil, err
+	}
+
+	return KeyPredForRange(startKey, endKey), nil
+}
+
+func (c *Cache) validateRange(startKey, endKey []byte) error {
 	prefixStart := []byte(c.prefix)
 	prefixEnd := []byte(clientv3.GetPrefixRangeEnd(c.prefix))
 
@@ -257,25 +384,25 @@ func (c *Cache) validateWatchRange(startKey, endKey []byte) error {
 			return nil
 		}
 		if bytes.Compare(startKey, prefixStart) < 0 || bytes.Compare(startKey, prefixEnd) >= 0 {
-			return ErrUnsupportedWatch
+			return ErrKeyRangeInvalid
 		}
 		return nil
 
 	case isFromKey:
 		if c.prefix != "" {
-			return ErrUnsupportedWatch
+			return ErrKeyRangeInvalid
 		}
 		return nil
 
 	default:
 		if bytes.Compare(endKey, startKey) <= 0 {
-			return ErrUnsupportedWatch
+			return ErrKeyRangeInvalid
 		}
 		if c.prefix == "" {
 			return nil
 		}
 		if bytes.Compare(startKey, prefixStart) < 0 || bytes.Compare(endKey, prefixEnd) > 0 {
-			return ErrUnsupportedWatch
+			return ErrKeyRangeInvalid
 		}
 		return nil
 	}

@@ -4,7 +4,34 @@ Previous change logs can be found at [CHANGELOG-3.5](https://github.com/etcd-io/
 
 ---
 
-## v3.6.3 (TBD)
+## v3.6.5 (TBA)
+
+### etcd server
+
+- [Remove the flag `--experimental-snapshot-catch-up-entries` from `etcd --help` output](https://github.com/etcd-io/etcd/pull/20422)
+- Fix [etcd repeatedly log the error "cannot detect storage schema version: missing confstate information"](https://github.com/etcd-io/etcd/pull/20496)
+
+### Dependencies
+
+- Compile binaries using [go 1.23.12](https://github.com/etcd-io/etcd/pull/20461).
+- [Bump bbolt to v1.4.3](https://github.com/etcd-io/etcd/pull/20513).
+
+---
+
+## v3.6.4 (2025-07-25)
+
+### etcd server
+
+- Fix [etcdserver bootstrap failure when replaying learner promotion operation due to not exist in v3store](https://github.com/etcd-io/etcd/pull/20387)
+
+---
+
+## v3.6.3 (2025-07-22)
+
+### etcd server
+
+- Fix [v2store check (IsMetaStoreOnly) returns wrong result even there is no any auth data](https://github.com/etcd-io/etcd/pull/20370)
+- Improve [help message for --quota-backend-bytes](https://github.com/etcd-io/etcd/pull/20352)
 
 ---
 

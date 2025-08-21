@@ -15,349 +15,315 @@
 package report
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 
-	"go.etcd.io/etcd/tests/v3/robustness/model"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
-func TestPersistedRequests(t *testing.T) {
-	lg := zaptest.NewLogger(t)
-
+func TestMergeMemberEntries(t *testing.T) {
 	tcs := []struct {
-		name           string
-		dataDirs       []string
-		readerFunc     func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error)
-		expectErr      string
-		expectRequests []model.EtcdRequest
+		name          string
+		memberEntries [][]raftpb.Entry
+		expectErr     string
+		expectEntries []raftpb.Entry
 	}{
 		{
-			name:      "Error when empty data dir",
-			dataDirs:  []string{},
-			expectErr: "no data dirs",
+			name:          "Error when empty data dir",
+			memberEntries: [][]raftpb.Entry{},
+			expectErr:     "no WAL entries matched",
 		},
 		{
-			name:     "Success when no entries",
-			dataDirs: []string{"etcd0"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				return []model.EtcdRequest{}, nil
+			name: "Success when no entries",
+			memberEntries: [][]raftpb.Entry{
+				{},
 			},
-			expectRequests: []model.EtcdRequest{},
+			expectErr: "no WAL entries matched",
 		},
 		{
-			name:     "Error when error on single node cluster",
-			dataDirs: []string{"etcd0"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				return []model.EtcdRequest{}, errors.New("error reading")
+			name: "Error when one member cluster didn't observed index",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectErr: "error reading",
+			expectErr: "no entry for raft index 2",
 		},
 		{
-			name:     "Success when one member cluster",
-			dataDirs: []string{"etcd0"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				return []model.EtcdRequest{
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-				}, nil
+			name: "Error when entries index unordered",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+				},
 			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-			},
+			expectErr: "raft index should increase, got: 1, previous: 3",
 		},
 		{
-			name:     "Success when three members agree on entries",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				return []model.EtcdRequest{
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-					{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-				}, nil
+			name: "Error when entries index duplicated",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+				},
 			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-			},
+			expectErr: "raft index should increase, got: 1, previous: 1",
 		},
 		{
-			name:     "Success when three member have no entries",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				return []model.EtcdRequest{}, nil
+			name: "Success when one member cluster",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectRequests: []model.EtcdRequest{},
-		},
-		{
-			name:     "Success when one member returned error in three node cluster",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd1":
-					return []model.EtcdRequest{}, errors.New("error reading")
-				default:
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				}
-			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
 			},
 		},
 		{
-			name:     "Success when one member returned empty in three node cluster",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd1":
-					return []model.EtcdRequest{}, nil
-				default:
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				}
+			name: "Success when three members agree on entries",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-			},
-		},
-		{
-			name:     "Error when two members returned error in three node cluster",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd1", "etcd2":
-					return []model.EtcdRequest{}, errors.New("error reading")
-				default:
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				}
-			},
-			expectErr: "error reading",
-		},
-		{
-			name:     "Success if members didn't observe whole history",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
-			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
 			},
 		},
 		{
-			name:     "Success if only one member observed history",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd1", "etcd2":
-					return []model.EtcdRequest{}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Success when three members have no entries",
+			memberEntries: [][]raftpb.Entry{
+				{}, {}, {},
 			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
+			expectErr: "no WAL entries matched",
+		},
+		{
+			name: "Success when one member has no entries in three node cluster",
+			memberEntries: [][]raftpb.Entry{
+				{},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+			},
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
 			},
 		},
 		{
-			name:     "Success when one member observed different last entry",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 4}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Success if two members have no entries in three node cluster",
+			memberEntries: [][]raftpb.Entry{
+				{},
+				{},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectRequests: []model.EtcdRequest{
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-				{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
 			},
 		},
 		{
-			name:     "Error when one member didn't observe whole history and others observed different last entry",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-					}, nil
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 4}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Success if members didn't observe whole history",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+				},
+				{
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectErr: "unexpected differences between wal entries",
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
+			},
 		},
 		{
-			name:     "Error when three members observed different last entry",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 4}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 5}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Success if members observed only one part of history",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+				},
+				{
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+				},
+				{
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectErr: "unexpected differences between wal entries",
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
+			},
 		},
 		{
-			name:     "Error when one member returned error and others differ on last entry",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{}, errors.New("error reading")
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 4}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Error when in three member cluster if no members observed index",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
 			},
-			expectErr: "unexpected differences between wal entries",
+			expectErr: "no entry for raft index 2",
 		},
 		{
-			name:     "Error when one member observed empty history and others differ on last entry",
-			dataDirs: []string{"etcd0", "etcd1", "etcd2"},
-			readerFunc: func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-				switch dataDir {
-				case "etcd0":
-					return []model.EtcdRequest{}, nil
-				case "etcd1":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 3}},
-					}, nil
-				case "etcd2":
-					return []model.EtcdRequest{
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 1}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 2}},
-						{Type: model.Compact, Compact: &model.CompactRequest{Revision: 4}},
-					}, nil
-				default:
-					panic("unexpected")
-				}
+			name: "Success if only one member observed history",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{},
+				{},
 			},
-			expectErr: "unexpected differences between wal entries",
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
+			},
+		},
+		{
+			name: "Success when one member observed different last entry",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("x")},
+				},
+			},
+			expectEntries: []raftpb.Entry{
+				{Index: 1, Data: []byte("a")},
+				{Index: 2, Data: []byte("b")},
+				{Index: 3, Data: []byte("c")},
+			},
+		},
+		{
+			name: "Error when one member didn't observe whole history and others observed different last entry",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("x")},
+				},
+			},
+			expectErr: "mismatching entries on raft index 3",
+		},
+		{
+			name: "Error when three members observed different last entry",
+			memberEntries: [][]raftpb.Entry{
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("x")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("y")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("a")},
+					raftpb.Entry{Index: 2, Data: []byte("z")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+			},
+			expectErr: "mismatching entries on raft index 2",
+		},
+		{
+			name: "Error when one member observed empty history and others differ on last entry",
+			memberEntries: [][]raftpb.Entry{
+				{},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("x")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+				{
+					raftpb.Entry{Index: 1, Data: []byte("y")},
+					raftpb.Entry{Index: 2, Data: []byte("b")},
+					raftpb.Entry{Index: 3, Data: []byte("c")},
+				},
+			},
+			expectErr: "mismatching entries on raft index 1",
 		},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			requests, err := persistedRequests(lg, tc.dataDirs, tc.readerFunc)
+			entries, err := mergeMembersEntries(tc.memberEntries)
 			if tc.expectErr == "" {
 				require.NoError(t, err)
 			} else {
 				require.ErrorContains(t, err, tc.expectErr)
 			}
-			require.Equal(t, tc.expectRequests, requests)
+			require.Equal(t, tc.expectEntries, entries)
 		})
 	}
 }

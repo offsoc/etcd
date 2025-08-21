@@ -27,7 +27,7 @@ type demux struct {
 	// activeWatchers & laggingWatchers hold the first revision the watcher still needs (nextRev).
 	activeWatchers  map[*watcher]int64
 	laggingWatchers map[*watcher]int64
-	history         *ringBuffer
+	history         ringBuffer[[]*clientv3.Event]
 	resyncInterval  time.Duration
 }
 
@@ -45,7 +45,7 @@ func newDemux(historyWindowSize int, resyncInterval time.Duration) *demux {
 	return &demux{
 		activeWatchers:  make(map[*watcher]int64),
 		laggingWatchers: make(map[*watcher]int64),
-		history:         newRingBuffer(historyWindowSize),
+		history:         *newRingBuffer(historyWindowSize, func(batch []*clientv3.Event) int64 { return batch[0].Kv.ModRevision }),
 		resyncInterval:  resyncInterval,
 	}
 }
@@ -71,13 +71,17 @@ func (d *demux) Register(w *watcher, startingRev int64) {
 	defer d.mu.Unlock()
 
 	latestRev := d.history.PeekLatest()
+	if latestRev == 0 {
+		if startingRev == 0 {
+			d.activeWatchers[w] = 0
+		} else {
+			d.laggingWatchers[w] = startingRev
+		}
+		return
+	}
 
 	// Special case: 0 means “newest”.
 	if startingRev == 0 {
-		if latestRev == 0 {
-			d.activeWatchers[w] = 0
-			return
-		}
 		startingRev = latestRev + 1
 	}
 
@@ -106,23 +110,39 @@ func (d *demux) Broadcast(events []*clientv3.Event) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.history.Append(events)
+	batchStart := 0
+	for end := 1; end < len(events); end++ {
+		if events[end].Kv.ModRevision != events[batchStart].Kv.ModRevision {
+			if end > batchStart {
+				d.history.Append(events[batchStart:end])
+			}
+			batchStart = end
+		}
+	}
+	if batchStart < len(events) {
+		d.history.Append(events[batchStart:])
+	}
 
+	firstRev := events[0].Kv.ModRevision
 	lastRev := events[len(events)-1].Kv.ModRevision
 	for w, nextRev := range d.activeWatchers {
-		start := len(events)
+		if nextRev != 0 && firstRev > nextRev {
+			d.laggingWatchers[w] = nextRev
+			delete(d.activeWatchers, w)
+			continue
+		}
+		sendStart := len(events)
 		for i, ev := range events {
 			if ev.Kv.ModRevision >= nextRev {
-				start = i
+				sendStart = i
 				break
 			}
 		}
-
-		if start == len(events) {
+		if sendStart == len(events) {
 			continue
 		}
 
-		if !w.enqueueEvent(events[start:]) { // overflow → lagging
+		if !w.enqueueEvent(events[sendStart:]) { // overflow → lagging
 			d.laggingWatchers[w] = nextRev
 			delete(d.activeWatchers, w)
 		} else {
@@ -151,23 +171,26 @@ func (d *demux) resyncLaggingWatchers() {
 	defer d.mu.Unlock()
 
 	oldestRev := d.history.PeekOldest()
+	if oldestRev == 0 {
+		return
+	}
+
 	for w, nextRev := range d.laggingWatchers {
-		if oldestRev != 0 && nextRev < oldestRev {
+		if nextRev < oldestRev {
 			w.Stop()
 			delete(d.laggingWatchers, w)
 			continue
 		}
 		// TODO: re-enable key‐predicate in Filter when non‐zero startRev or performance tuning is needed
-		missed := d.history.Filter(nextRev)
-
 		enqueueFailed := false
-		for _, eventBatch := range missed {
+		d.history.AscendGreaterOrEqual(nextRev, func(rev int64, eventBatch []*clientv3.Event) bool {
 			if !w.enqueueEvent(eventBatch) { // buffer overflow: watcher still lagging
 				enqueueFailed = true
-				break
+				return false
 			}
-			nextRev = eventBatch[0].Kv.ModRevision + 1
-		}
+			nextRev = rev + 1
+			return true
+		})
 
 		if !enqueueFailed {
 			delete(d.laggingWatchers, w)

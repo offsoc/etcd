@@ -14,7 +14,7 @@ The purpose of these tests is to rigorously validate that etcd maintains its [KV
 | Single node cluster can loose a write on crash [#14370]                      | Aug 2022   | v3.4 or earlier   | User            | Yes, report preceded robustness tests             | `make test-robustness-issue14370`   |
 | Enabling auth can lead to inconsistency [#14571]                             | Oct 2022   | v3.4 or earlier   | User            | No, authorization is not covered.                 |                                     |
 | Inconsistent revision caused by crash during defrag [#14685]                 | Nov 2022   | v3.5              | Robustness      | Yes, after covering defragmentation.              | `make test-robustness-issue14685`   |
-| Watch progress notification not synced with steam [#15220]                   | Jan 2023   | v3.4 or earlier   | User            | Yes, after covering watch progress notification   |                                     |
+| Watch progress notification not synced with steam [#15220]                   | Jan 2023   | v3.4 or earlier   | User            | Yes, after covering watch progress notification   | `make test-robustness-issue15220`   |
 | Watch traveling back in time after network partition [#15271]                | Feb 2023   | v3.4 or earlier   | Robustness      | Yes, after covering network partitions            | `make test-robustness-issue15271`   |
 | Duplicated watch event due to bug in TXN caching [#17247]                    | Jan 2024   | main branch       | Robustness      | Yes, prevented regression in v3.6                 |                                     |
 | Watch events lost during stream starvation [#17529]                          | Mar 2024   | v3.4 or earlier   | User            | Yes, after covering of slow watch                 | `make test-robustness-issue17529`   |
@@ -60,49 +60,52 @@ These tests cover various scenarios, including:
 
 ### Distributed System Terminology
 
-*   **Consensus:** A process where nodes in a distributed system agree on a single data value. Etcd uses the Raft algorithm to achieve consensus.
-*   **Strict vs Eventual consistency:**
-    *   **Strict Consistency:** All components see the same data at the same time after an update.
-    *   **Eventual Consistency:** Components may temporarily see different data after an update but converge to the same view eventually.
-*   **Consistency Models (https://jepsen.io/consistency)**
-    *   **Single-Object Consistency Models:**
-        *   **Sequential Consistency:** A strong single-object model. Operations appear to take place in some total order, consistent with the order of operations on each individual process.
-        *   **Linearizable Consistency:** The strongest single-object model. Operations appear to happen instantly and in order, consistent with real-time ordering.
-    *   **Transactional Consistency Models**
-        *   **Serializable Consistency:** A transactional model guaranteeing that transactions appear to occur in some total order. Operations within a transaction are atomic and do not interleave with other transactions. It's a multi-object property, applying to the entire system, not just individual objects.
-        *   **Strict Serializable Consistency:** The strongest transactional model. Combines the total order of serializability with the real-time ordering constraints of linearizability.
+* **Consensus:** A process where nodes in a distributed system agree on a single data value. Etcd uses the Raft algorithm to achieve consensus.
+* **Strict vs Eventual consistency:**
+  * **Strict Consistency:** All components see the same data at the same time after an update.
+  * **Eventual Consistency:** Components may temporarily see different data after an update but converge to the same view eventually.
+* **Consistency Models (<https://jepsen.io/consistency>)**
+  * **Single-Object Consistency Models:**
+    * **Sequential Consistency:** A strong single-object model. Operations appear to take place in some total order, consistent with the order of operations on each individual process.
+    * **Linearizable Consistency:** The strongest single-object model. Operations appear to happen instantly and in order, consistent with real-time ordering.
+  * **Transactional Consistency Models**
+    * **Serializable Consistency:** A transactional model guaranteeing that transactions appear to occur in some total order. Operations within a transaction are atomic and do not interleave with other transactions. It's a multi-object property, applying to the entire system, not just individual objects.
+    * **Strict Serializable Consistency:** The strongest transactional model. Combines the total order of serializability with the real-time ordering constraints of linearizability.
 
 Etcd provides strict serializability for KV operations and eventual consistency for Watch.
 
 **Etcd Guarantees**
 
-*   **Key-value API operations** https://etcd.io/docs/latest/learning/api_guarantees/#kv-apis
-*   **Watch API guarantees** https://etcd.io/docs/latest/learning/api_guarantees/#watch-apis
+* **Key-value API operations** <https://etcd.io/docs/latest/learning/api_guarantees/#kv-apis>
+* **Watch API guarantees** <https://etcd.io/docs/latest/learning/api_guarantees/#watch-apis>
 
 ### Kubernetes Integration
 
-*   **[Implicit Kubernetes-ETCD Contract]:**  Defines how Kubernetes uses etcd to store cluster state.
-*   **ResourceVersion:**  A string used by Kubernetes to track resource versions, corresponding to etcd revisions.
-*   **Sharding resource types:** Kubernetes treats each resource type as a totally independent entity.
+* **[Implicit Kubernetes-ETCD Contract]:**  Defines how Kubernetes uses etcd to store cluster state.
+* **ResourceVersion:**  A string used by Kubernetes to track resource versions, corresponding to etcd revisions.
+* **Sharding resource types:** Kubernetes treats each resource type as a totally independent entity.
     It allows sharding each resource type into a separate etcd cluster.
 
 [Implicit Kubernetes-ETCD Contract]: https://docs.google.com/document/d/1NUZDiJeiIH5vo_FMaTWf0JtrQKCx0kpEaIIuPoj9P6A/edit?usp=sharing
 
-## Running locally 
+## Running locally
 
 1. Build etcd with failpoints
+
     ```bash
     make gofail-enable
     make build
     make gofail-disable
     ```
+
 2. Run the tests
+
     ```bash
     make test-robustness
     ```
-   
+
     Optionally, you can pass environment variables:
-    * `GO_TEST_FLAGS` - to pass additional arguments to `go test`. 
+    * `GO_TEST_FLAGS` - to pass additional arguments to `go test`.
       It is recommended to run tests multiple times with failfast enabled. this can be done by setting `GO_TEST_FLAGS='--count=100 --failfast'`.
     * `EXPECT_DEBUG=true` - to get logs from the cluster.
     * `RESULTS_DIR` - to change the location where the results report will be saved.
@@ -120,6 +123,7 @@ Errors in the etcd model could be causing false positives, which makes the abili
    > Note: By default robustness test report is only generated for failed test.
 
    * **For local runs:** this would be by identifying log line, in the following example that would be `/tmp/TestRobustnessExploratory_Etcd_HighTraffic_ClusterOfSize1`:
+
       ```
       logger.go:146: 2024-04-08T09:45:27.734+0200 INFO    Saving robustness test report   {"path": "/tmp/TestRobustnessExploratory_Etcd_HighTraffic_ClusterOfSize1"}
       ```
@@ -152,6 +156,7 @@ Errors in the etcd model could be causing false positives, which makes the abili
 
 If robustness tests fail, we want to analyse the report to confirm if the issue is on etcd side. The location of the directory with the report
 is mentioned in the `Saving robustness test report` log. Logs from report generation should look like:
+
 ```
     logger.go:146: 2024-05-08T10:42:54.429+0200 INFO    Saving robustness test report   {"path": "/tmp/TestRobustnessRegression_Issue14370/1715157774429416550"}
     logger.go:146: 2024-05-08T10:42:54.429+0200 INFO    Saving member data dir  {"member": "TestRobustnessRegressionIssue14370-test-0", "path": "/tmp/TestRobustnessRegression_Issue14370/1715157774429416550/server-TestRobustnessRegressionIssue14370-test-0"}
@@ -179,6 +184,7 @@ is mentioned in the `Saving robustness test report` log. Logs from report genera
 ```
 
 The report follows the hierarchy:
+
 * `server-*` - etcd server data directories, can be used to verify disk/memory corruption.
   * `member`
     * `wal` - Write Ahead Log (WAL) directory, that can be analysed using `etcd-dump-logs` command line tool available in `tools` directory.
@@ -192,31 +198,35 @@ The report follows the hierarchy:
 
 Let's reproduce and analyse robustness test report for issue [#14370].
 To reproduce the issue by yourself run `make test-robustness-issue14370`.
-After a couple of tries robustness tests should fail with a log `Linearization failed` and save the report locally.
+After a couple of tries robustness tests should fail with a log `Linearization illegal` and save the report locally.
 
 Example:
+
 ```
-    logger.go:146: 2024-05-08T10:42:53.379+0200 INFO    Validating linearizable operations      {"timeout": "5m0s"}
-    logger.go:146: 2024-05-08T10:42:54.429+0200 ERROR   Linearization failed    {"duration": "1.050105973s"}
-    validate.go:39: Failed linearization, skipping further validation
-    logger.go:146: 2024-05-08T10:42:54.429+0200 INFO    Saving robustness test report   {"path": "/tmp/TestRobustnessRegression_Issue14370/1715157774429416550"}
+    logger.go:146: 2025-08-01T22:54:26.550+0900 INFO Validating linearizable operations {"timeout": "5m0s"}
+    logger.go:146: 2025-08-01T22:54:26.755+0900 ERROR Linearization illegal {"duration": "205.05225ms"}
+    logger.go:146: 2025-08-01T22:54:26.755+0900 INFO Skipping other validations as linearization failed
+    main_test.go:122: linearization: illegal
+    logger.go:146: 2025-08-01T22:54:26.756+0900 INFO Saving robustness test report {"path": "/tmp/TestRobustnessRegression_Issue14370/1754056466755991000"}
     ...
-    logger.go:146: 2024-05-08T10:42:54.441+0200 INFO    Saving visualization    {"path": "/tmp/TestRobustnessRegression_Issue14370/1715157774429416550/history.html"}
+    logger.go:146: 2025-08-01T22:54:26.850+0900 INFO Saving visualization {"path": "/tmp/TestRobustnessRegression_Issue14370/1754056466755991000/history.html"}
+    logger.go:146: 2025-08-01T22:54:26.878+0900 INFO killing server... {"name": "TestRobustnessRegressionIssue14370-test-0"}
+    logger.go:146: 2025-08-01T22:54:26.878+0900 INFO stopping server... {"name": "TestRobustnessRegressionIssue14370-test-0"}
+    logger.go:146: 2025-08-01T22:54:26.886+0900 INFO stopped server. {"name": "TestRobustnessRegressionIssue14370-test-0"}
 ```
 
 Linearization issues are easiest to analyse via history visualization.
-Open `/tmp/TestRobustnessRegression_Issue14370/1715157774429416550/history.html` file in your browser.
+Open `/tmp/TestRobustnessRegression_Issue14370/1754056466755991000/history.html` file in your browser.
 Jump to the error in linearization by clicking `[ jump to first error ]` on the top of the page.
 
 You should see a graph similar to the one on the image below.
 ![issue14370](readme-images/issue14370.png)
 
 The last correct request (connected with the grey line) is a `Put` request that succeeded and got revision `168`.
-All following requests are invalid (connected with red line) as they have revision `167`. 
+All following requests are invalid (connected with red line) as they have revision `167`.
 Etcd guarantees that revision is non-decreasing, so this shows a bug in etcd as there is no way revision should decrease.
 This is consistent with the root cause of [#14370] as it was an issue with the process crash causing the last write to be lost.
 
-[#14370]: https://github.com/etcd-io/etcd/issues/14370
 
 ### Example analysis of a watch issue
 
@@ -225,6 +235,7 @@ To reproduce the issue by yourself run `make test-robustness-issue15271`.
 After a couple of tries robustness tests should fail with a logs `Broke watch guarantee` and save report locally.
 
 Example:
+
 ```
     logger.go:146: 2024-05-08T10:50:11.301+0200 INFO    Validating linearizable operations      {"timeout": "5m0s"}
     logger.go:146: 2024-05-08T10:50:15.754+0200 INFO    Linearization success   {"duration": "4.453346487s"}
@@ -245,6 +256,7 @@ For client `4` that broke the watch guarantee open `/tmp/TestRobustnessRegressio
 Each line consists of json blob corresponding to a single watch request sent by the client.
 Look for events with `Revision` equal to revision mentioned in the first log with `Broke watch guarantee`, in this case, look for `"Revision":3,`.
 You should see watch responses where the `Revision` decreases like ones below:
+
 ```
 {"Events":[{"Type":"put-operation","Key":"key5","Value":{"Value":"793","Hash":0},"Revision":799,"IsCreate":false,"PrevValue":null}],"IsProgressNotify":false,"Revision":799,"Time":3202907249,"Error":""}
 {"Events":[{"Type":"put-operation","Key":"key4","Value":{"Value":"1","Hash":0},"Revision":3,"IsCreate":true,"PrevValue":null}, ...
@@ -254,6 +266,5 @@ Up to the first response, the `Revision` of events only increased up to a value 
 However, the following line includes an event with `Revision` equal `3`.
 If you follow the `revision` throughout the file you should notice that watch replayed revisions for a second time.
 This is incorrect and breaks `Ordered` [watch API guarantees].
-This is consistent with the root cause of [#14370] where the member reconnecting to cluster will resend revisions.
+This is consistent with the root cause of [#15271] where the member reconnecting to cluster will resend revisions.
 
-[#15271]: https://github.com/etcd-io/etcd/issues/15271
